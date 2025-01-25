@@ -8,7 +8,7 @@ The model was trained on a dataset of car and truck images sourced from Kaggle.
 
 **Limitations:**
 
-* **Current Functionality:** The current implementation only classifies images as either "car" or "truck." It does not support any other vehicle types.
+* **Current Functionality:** The current implementation only classifies images as either "car" or "truck." It does not identify other objects or people
 * **Colab Dependency:** The provided code is currently optimized for execution on Google Colaboratory and may require adjustments for other environments.
 
 **Future Improvements:**
