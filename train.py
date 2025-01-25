@@ -1,17 +1,16 @@
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.applications import VGG16, ResNet50
+from tensorflow.keras.applications import VGG16
 from tensorflow.keras import layers, models, optimizers
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping
 import os
 import shutil
 from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, precision_score, recall_score, f1_score
 import numpy as np
 import matplotlib.pyplot as plt
-
 import kagglehub
-
+from tensorflow.keras.models import load_model
 
 path = kagglehub.dataset_download("ryanholbrook/car-or-truck")
 print("Path to dataset files:", path)
@@ -19,7 +18,7 @@ print("Path to dataset files:", path)
 
 original_train_dir = os.path.join(path, 'train')
 
-
+# Create new directories for split data
 base_dir = os.path.join(path, 'split_data')
 os.makedirs(base_dir, exist_ok=True)
 train_dir = os.path.join(base_dir, 'train')
@@ -27,7 +26,7 @@ os.makedirs(train_dir, exist_ok=True)
 test_dir = os.path.join(base_dir, 'test')
 os.makedirs(test_dir, exist_ok=True)
 
-
+# Split data into train and test (80% train, 20% test)
 for class_name in os.listdir(original_train_dir):
     class_dir = os.path.join(original_train_dir, class_name)
     train_class_dir = os.path.join(train_dir, class_name)
@@ -44,26 +43,26 @@ for class_name in os.listdir(original_train_dir):
     for img in test_images:
         shutil.copy(os.path.join(class_dir, img), os.path.join(test_class_dir, img))
 
-
+# Image dimensions
 IMG_HEIGHT, IMG_WIDTH = 224, 224
 BATCH_SIZE = 32
 
+class_labels = { 0:"car" , 1:"truck"}
 
+# Data augmentation and preprocessing
 train_datagen = ImageDataGenerator(
     rescale=1.0 / 255.0,
-    rotation_range=40,
-    width_shift_range=0.3,
-    height_shift_range=0.3,
-    shear_range=0.3,
-    zoom_range=0.3,
+    rotation_range=20,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    zoom_range=0.2,
     horizontal_flip=True,
-    brightness_range=[0.8, 1.2],
-    fill_mode='nearest'
 )
 
 test_datagen = ImageDataGenerator(rescale=1.0 / 255.0)
 
-
+# Create data generators
 train_generator = train_datagen.flow_from_directory(
     train_dir,
     target_size=(IMG_HEIGHT, IMG_WIDTH),
@@ -75,72 +74,56 @@ test_generator = test_datagen.flow_from_directory(
     test_dir,
     target_size=(IMG_HEIGHT, IMG_WIDTH),
     batch_size=BATCH_SIZE,
-    class_mode='categorical'
+    class_mode='categorical',
+    shuffle=False  # Important for evaluating metrics correctly
 )
 
+# Load the VGG16 model with pre-trained ImageNet weights
+base_model = VGG16(weights='imagenet', include_top=False, input_shape=(IMG_HEIGHT, IMG_WIDTH, 3))
 
-base_model = ResNet50(weights='imagenet', include_top=False, input_shape=(IMG_HEIGHT, IMG_WIDTH, 3))
+# Freeze the base model
+base_model.trainable = False
 
-
-for layer in base_model.layers[-4:]:
-    layer.trainable = True
-
-
+# Add custom layers on top of VGG16
 model = models.Sequential([
     base_model,
     layers.Flatten(),
-    layers.Dense(512, activation='relu'),
-    layers.BatchNormalization(),
-    layers.Dropout(0.5),
-    layers.Dense(256, activation='relu'),
-    layers.BatchNormalization(),
-    layers.Dropout(0.5),
     layers.Dense(128, activation='relu'),
-    layers.BatchNormalization(),
     layers.Dropout(0.5),
     layers.Dense(train_generator.num_classes, activation='softmax')
 ])
 
-
+# Compile the model
 model.compile(
-    optimizer=optimizers.Adam(learning_rate=0.0001),
+    optimizer=optimizers.Adam(learning_rate=0.001),
     loss='categorical_crossentropy',
     metrics=['accuracy']
 )
 
-
+# Display the model summary
 model.summary()
 
-
-class_weights = compute_class_weight(
-    class_weight='balanced',
-    classes=np.unique(train_generator.classes),
-    y=train_generator.classes
-)
-
-
-class_weight_dict = dict(enumerate(class_weights))
-
-
+# Set up early stopping
 early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=2, min_lr=1e-6, verbose=1)
 
-
+# Train the model
 history = model.fit(
     train_generator,
     validation_data=test_generator,
-    epochs=20,  
-    callbacks=[early_stopping, reduce_lr],
-    class_weight=class_weight_dict  
+    epochs=10,
+    callbacks=[early_stopping]
 )
 
-model.save("car_or_truck_resnet50.h5")
+# Save the model
+model.save("car_or_truck_vgg16.h5")
 
+# Evaluate the model on the test set
 test_loss, test_accuracy = model.evaluate(test_generator)
 print(f"Test Loss: {test_loss}")
 print(f"Test Accuracy: {test_accuracy}")
 
-
+# Plot training and validation accuracy/loss
+# Accuracy
 plt.plot(history.history['accuracy'], label='Training Accuracy')
 plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
 plt.xlabel('Epochs')
@@ -149,6 +132,7 @@ plt.legend()
 plt.title('Training and Validation Accuracy')
 plt.show()
 
+# Loss
 plt.plot(history.history['loss'], label='Training Loss')
 plt.plot(history.history['val_loss'], label='Validation Loss')
 plt.xlabel('Epochs')
@@ -157,34 +141,35 @@ plt.legend()
 plt.title('Training and Validation Loss')
 plt.show()
 
-from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score,ConfusionMatrixDisplay
-from tensorflow.keras.models import load_model
+test_steps = test_generator.samples // BATCH_SIZE + (test_generator.samples % BATCH_SIZE > 0)
+predictions = model.predict(test_generator, steps=test_steps, verbose=1)
+predicted_classes = np.argmax(predictions, axis=1)
+true_classes = test_generator.classes
+class_labels = list(test_generator.class_indices.keys())
 
-
-y_true = test_generator.classes 
-y_pred = model.predict(test_generator)
-y_pred = np.argmax(y_pred, axis=1) 
-
-cm = confusion_matrix(y_true, y_pred)
-
-accuracy = accuracy_score(y_true, y_pred)
-
-precision = precision_score(y_true, y_pred, average='weighted') 
-
-recall = recall_score(y_true, y_pred, average='weighted') 
-
-f1 = f1_score(y_true, y_pred, average='weighted') 
-
-
-# Print the results
-print("Confusion Matrix:")
-print(cm)
-print("Accuracy:", accuracy)
-print("Precision:", precision)
-print("Recall:", recall)
-print("F1-score:", f1)
-
-disp = ConfusionMatrixDisplay(confusion_matrix=cm) 
-
-disp.plot() 
+# Confusion Matrix
+conf_matrix = confusion_matrix(true_classes, predicted_classes)
+disp = ConfusionMatrixDisplay(confusion_matrix=conf_matrix, display_labels=class_labels)
+disp.plot(cmap=plt.cm.Blues)
+plt.title("Confusion Matrix")
 plt.show()
+
+# Classification Report
+report = classification_report(true_classes, predicted_classes, target_names=class_labels)
+print("Classification Report:")
+print(report)
+
+# Calculate Precision, Recall, F1 Score (Weighted averages for class imbalance)
+precision = precision_score(true_classes, predicted_classes, average='weighted')
+recall = recall_score(true_classes, predicted_classes, average='weighted')
+f1 = f1_score(true_classes, predicted_classes, average='weighted')
+
+# Extract Accuracy from Confusion Matrix
+accuracy = np.trace(conf_matrix) / np.sum(conf_matrix)
+
+# Print the summary of the results
+print("Results Summary:")
+print(f"Test Accuracy: {accuracy * 100:.2f}%")
+print(f"Precision: {precision:.4f}")
+print(f"Recall: {recall:.4f}")
+print(f"F1 Score: {f1:.4f}")
